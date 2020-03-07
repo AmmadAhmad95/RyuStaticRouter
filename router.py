@@ -112,7 +112,28 @@ class Router(app_manager.RyuApp):
         in_port = ev.msg.match['in_port']
         data = ev.msg.data
         pkt = packet.Packet(data)
-
         
+        #get packet's ethernet info
+        pkt_eth = pkt.get_protocol(ethernet.ethernet)
+        mac_dst = pkt_eth.dst
+        mac_src = pkt_eth.src
+
+        #check packets MAC dest against datapath's interface table for validity
+        interfaces = self.interface_table.get(dpid)
+
+
+        #check packets IP against routing table - including subnets - and get the 
+        #hop IP and the output table
+
+
+        #get MAC of next hop from ARP table
+
+
+        #change packet's MAC dst to the next hop, and MAC src to the outgoing port's MAC
+
+
+        #send packet!
+        
+
 
         return
