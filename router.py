@@ -83,23 +83,74 @@ class Router(app_manager.RyuApp):
 
 
     ## ICMP
-    def send_icmp(self, datapath, dst_ip, type, code, data):
+    def send_icmp(self, datapath, dst_ip, src_mac, icmp_type, icmp_code, ip_header, icmp_data):
+        self.logger.debug("Sending ICMP")
         proto = datapath.ofproto
         parser = datapath.ofproto_parser
+        dpid = dpid_to_str(datapath.id)
 
         pkt = packet.Packet()
-        out_ip = ""
-        out_hw = ""
-        out_port = 0
+
+        out_port, hop_ip = self.get_route(dpid, dst_ip)
+        out_mac = self.mac_from_port(dpid, out_port)
+        dst_mac = src_mac
+        self.logger.debug("Router {} sending ICMP to {} with target MAC {} (from port {} hopping to {})".format(dpid, dst_ip, dst_mac, out_port, hop_ip))
+
+        for interface in self.interface_table.get(dpid):
+            if interface.get("port") == out_port:
+                src_ip = interface.get("ip")
+
+        ip_header = ip_header.serialize
+        self.logger.debug(ip_header)
 
         ## pkt.add_protocol(...)
         ## https://ryu.readthedocs.io/en/latest/library_packet_ref/packet_icmp.html
+
+        pkt.add_protocol(ethernet.ethernet(
+            dst=dst_mac,
+            src=out_mac,
+            ethertype=ethernet.ether.ETH_TYPE_IP
+        ))
+        pkt.add_protocol(ipv4.ipv4(
+            dst=dst_ip,
+            src=src_ip,
+            proto=ipv4.inet.IPPROTO_ICMP
+        ))
+        pkt.add_protocol(icmp.icmp(
+            type_=icmp_type,
+            code=icmp_code
+        ))
 
         pkt.serialize()
         data = pkt.data
         actions = [datapath.ofproto_parser.OFPActionOutput(port=out_port)]
         out = datapath.ofproto_parser.OFPPacketOut(datapath=datapath, buffer_id=proto.OFP_NO_BUFFER, in_port=proto.OFPP_ANY, actions=actions, data=data)
         datapath.send_msg(out)
+
+
+    def get_route(self, dpid, dst_ip):
+        routing = self.routing_table.getRoutingTable(dpid)
+        destination = ipaddress.ip_address(dst_ip)
+        for route in routing:
+            if destination in ipaddress.ip_network(route.get("destination")):
+                return route.get('out_port'), route.get('hop')
+        return '', ''
+
+    def mac_from_ip(self, dpid, ip):
+        arp = self.arp_table.getArpTable(dpid)
+        for addr in arp:
+            if addr.get("ip") == ip:
+                return addr.get("hw")
+        return ''
+
+    def mac_from_port(self, dpid, port):
+        interfaces = self.interface_table.get(dpid)
+        for interface in interfaces:
+            if (interface.get("port") == port):
+                return interface.get("hw")
+        return ''
+    
+
 
     ## Routing
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
@@ -118,11 +169,15 @@ class Router(app_manager.RyuApp):
         pkt_eth = pkt.get_protocol(ethernet.ethernet)
         mac_dst = pkt_eth.dst
         mac_src = pkt_eth.src
+        eth_typ = pkt_eth.ethertype
 
-        pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
-        ip_dst = pkt_ipv4.dst
-        ip_src = pkt_ipv4.src
-
+        if eth_typ == 0x0800:
+            pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
+            ip_dst = pkt_ipv4.dst
+            ip_src = pkt_ipv4.src
+        
+        if pkt_ipv4.proto == 1:
+            self.logger.debug("Incoming packet is ICMP")
 
         #check packets MAC dest against datapath's interface table for validity
         interfaces = self.interface_table.get(dpid)
@@ -138,38 +193,29 @@ class Router(app_manager.RyuApp):
 
         #check packets IP against routing table - including subnets - and get the 
         #hop IP and the output port
-        routing = self.routing_table.getRoutingTable(dpid)
-        destination = ipaddress.ip_address(ip_dst)
-        out_port = ''
-        hop_ip = ''
-        for route in routing:
-            if destination in ipaddress.ip_network(route.get("destination")):
-                out_port = route.get('out_port')
-                hop_ip = route.get('hop')
-                break
+        out_port, hop_ip = self.get_route(dpid, ip_dst)
         if hop_ip == None:
             hop_ip = ip_dst
         if out_port == '':
             #destination is not in routing table
+            #destination network unreachable (3 / 0)
+            #reasoning: https://tools.ietf.org/html/rfc1812#page-81
             self.logger.debug("destination is not in routing table")
+            self.send_icmp(datapath=datapath, dst_ip=ip_src, src_mac=mac_src, icmp_type=3, icmp_code=0, ip_header=pkt_ipv4, icmp_data=data)
             return
 
         #get MAC of next hop from ARP table
-        arp = self.arp_table.getArpTable(dpid)
-        hop_mac = ''
-        for addr in arp:
-            if addr.get("ip") == hop_ip:
-                hop_mac = addr.get("hw")
+        hop_mac = self.mac_from_ip(dpid, hop_ip)
         if hop_mac == '':
             #hop ip isnt in ARP table!
-            self.logger.debug("hop ip" + hop_ip + "isnt in ARP table")
+            #destination host unreachable (3 / 1)
+            self.logger.debug("hop ip " + hop_ip + " isnt in ARP table")
+            self.send_icmp(datapath=datapath, dst_ip=ip_src, src_mac=mac_src, icmp_type=3, icmp_code=1, ip_header=pkt_ipv4, icmp_data=data)
             return
 
         #change packet's MAC dst to the next hop, and MAC src to the outgoing port's MAC
-        out_mac = ''
-        for interface in interfaces:
-            if (interface.get("port") == out_port):
-                out_mac = interface.get("hw")
+        out_mac = self.mac_from_port(dpid, out_port)
+
         if out_mac == '':
             #i dont know how this would happen
             return
@@ -180,7 +226,6 @@ class Router(app_manager.RyuApp):
         ]
 
         #send packet!
+        self.logger.debug("{}: Routing packet to {} with target MAC {} (from port {} hopping to {})".format(dpid, ip_dst, hop_mac, out_port, hop_ip))
         datapath.send_msg(parser.OFPPacketOut(datapath, ev.msg.buffer_id, in_port, actions, data))
-
-
         return
