@@ -9,6 +9,7 @@ from ryu.lib.packet import ether_types
 from ryu.lib.dpid import dpid_to_str
 from ryu.lib import mac as mac_lib
 from ryu.utils import hex_array
+import ipaddress
 
 from staticdata import StaticRoutingTable, StaticARPTable
 
@@ -118,22 +119,68 @@ class Router(app_manager.RyuApp):
         mac_dst = pkt_eth.dst
         mac_src = pkt_eth.src
 
+        pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
+        ip_dst = pkt_ipv4.dst
+        ip_src = pkt_ipv4.src
+
+
         #check packets MAC dest against datapath's interface table for validity
         interfaces = self.interface_table.get(dpid)
-
+        interface_match = False
+        for interface in interfaces:
+            if interface.get('hw') == mac_dst:
+                interface_match = True
+                break
+        if not interface_match:
+            #packet shouldn't have come here!
+            self.logger.debug("Packet incorrectly came to router")
+            return
 
         #check packets IP against routing table - including subnets - and get the 
-        #hop IP and the output table
-
+        #hop IP and the output port
+        routing = self.routing_table.getRoutingTable(dpid)
+        destination = ipaddress.ip_address(ip_dst)
+        out_port = ''
+        hop_ip = ''
+        for route in routing:
+            if destination in ipaddress.ip_network(route.get("destination")):
+                out_port = route.get('out_port')
+                hop_ip = route.get('hop')
+                break
+        if hop_ip == None:
+            hop_ip = ip_dst
+        if out_port == '':
+            #destination is not in routing table
+            self.logger.debug("destination is not in routing table")
+            return
 
         #get MAC of next hop from ARP table
-
+        arp = self.arp_table.getArpTable(dpid)
+        hop_mac = ''
+        for addr in arp:
+            if addr.get("ip") == hop_ip:
+                hop_mac = addr.get("hw")
+        if hop_mac == '':
+            #hop ip isnt in ARP table!
+            self.logger.debug("hop ip" + hop_ip + "isnt in ARP table")
+            return
 
         #change packet's MAC dst to the next hop, and MAC src to the outgoing port's MAC
-
+        out_mac = ''
+        for interface in interfaces:
+            if (interface.get("port") == out_port):
+                out_mac = interface.get("hw")
+        if out_mac == '':
+            #i dont know how this would happen
+            return
+        actions = [
+            parser.OFPActionSetField(eth_src = out_mac),
+            parser.OFPActionSetField(eth_dst = hop_mac),
+            parser.OFPActionOutput(port = out_port)
+        ]
 
         #send packet!
-        
+        datapath.send_msg(parser.OFPPacketOut(datapath, ev.msg.buffer_id, in_port, actions, data))
 
 
         return
