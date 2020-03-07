@@ -67,6 +67,21 @@ class Router(app_manager.RyuApp):
         self.logger.debug("Port stats response in")
         # This type of OF event might be useful
         datapath_id = dpid_to_str(ev.msg.datapath.id)
+        current_arp = self.arp_table.getArpTable(datapath_id)
+        interface_entry = []
+        for p in ev.msg.body:
+            port = p.port_no
+            mac = p.hw_addr
+            ip = ''
+            for entry in current_arp:
+                if (entry.get('hw') == mac):
+                    ip = entry.get('ip')
+                    break
+            if ip != '' and port != 4294967294:
+                interface_entry.append({'port' : port, 'ip' : ip, 'hw' : mac})
+        self.interface_table[datapath_id] = interface_entry
+        self.logger.debug(self.interface_table)
+
 
     ## ICMP
     def send_icmp(self, datapath, dst_ip, type, code, data):
