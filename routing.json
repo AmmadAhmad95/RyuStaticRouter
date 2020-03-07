@@ -1,0 +1,36 @@
+{
+    "0000000000000002": [
+        {
+            "destination": "148.88.172.0/24",
+            "out_port": 1,
+            "hop": null
+        },
+        {
+            "destination": "88.42.191.0/24",
+            "out_port": 2,
+            "hop": null
+        },
+        {
+            "destination": "112.98.37.0/24",
+            "out_port": 2,
+            "hop": "88.42.191.2"
+        }
+    ],
+    "0000000000000003": [
+        {
+            "destination": "148.88.172.0/24",
+            "out_port": 1,
+            "hop": "88.42.191.1"
+        },
+        {
+            "destination": "88.42.191.0/24",
+            "out_port": 1,
+            "hop": null
+        },
+        {
+            "destination": "112.98.37.0/24",
+            "out_port": 2,
+            "hop": null
+        }
+    ]
+}
