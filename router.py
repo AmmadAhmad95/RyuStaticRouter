@@ -83,7 +83,7 @@ class Router(app_manager.RyuApp):
 
 
     ## ICMP
-    def send_icmp(self, datapath, dst_ip, src_mac, icmp_type, icmp_code, ip_header, icmp_data):
+    def send_icmp(self, datapath, dst_ip, src_mac, icmp_type, icmp_code, ip_ihl, icmp_data):
         self.logger.debug("Sending ICMP")
         proto = datapath.ofproto
         parser = datapath.ofproto_parser
@@ -100,8 +100,9 @@ class Router(app_manager.RyuApp):
             if interface.get("port") == out_port:
                 src_ip = interface.get("ip")
 
-        ip_header = ip_header.serialize
-        self.logger.debug(ip_header)
+        offset = 14 + 8 + (ip_ihl * 4)
+        payload = bytearray(icmp_data[14:offset])
+        self.logger.debug(type(payload))
 
         ## pkt.add_protocol(...)
         ## https://ryu.readthedocs.io/en/latest/library_packet_ref/packet_icmp.html
@@ -118,7 +119,8 @@ class Router(app_manager.RyuApp):
         ))
         pkt.add_protocol(icmp.icmp(
             type_=icmp_type,
-            code=icmp_code
+            code=icmp_code,
+            data=payload
         ))
 
         pkt.serialize()
@@ -175,9 +177,9 @@ class Router(app_manager.RyuApp):
             pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
             ip_dst = pkt_ipv4.dst
             ip_src = pkt_ipv4.src
-        
-        if pkt_ipv4.proto == 1:
-            self.logger.debug("Incoming packet is ICMP")
+            ip_ihl = pkt_ipv4.header_length
+            if pkt_ipv4.proto == 1:
+                self.logger.debug("Incoming packet is ICMP")
 
         #check packets MAC dest against datapath's interface table for validity
         interfaces = self.interface_table.get(dpid)
@@ -201,7 +203,7 @@ class Router(app_manager.RyuApp):
             #destination network unreachable (3 / 0)
             #reasoning: https://tools.ietf.org/html/rfc1812#page-81
             self.logger.debug("destination is not in routing table")
-            self.send_icmp(datapath=datapath, dst_ip=ip_src, src_mac=mac_src, icmp_type=3, icmp_code=0, ip_header=pkt_ipv4, icmp_data=data)
+            self.send_icmp(datapath=datapath, dst_ip=ip_src, src_mac=mac_src, icmp_type=3, icmp_code=0, ip_ihl=ip_ihl, icmp_data=data)
             return
 
         #get MAC of next hop from ARP table
@@ -210,7 +212,7 @@ class Router(app_manager.RyuApp):
             #hop ip isnt in ARP table!
             #destination host unreachable (3 / 1)
             self.logger.debug("hop ip " + hop_ip + " isnt in ARP table")
-            self.send_icmp(datapath=datapath, dst_ip=ip_src, src_mac=mac_src, icmp_type=3, icmp_code=1, ip_header=pkt_ipv4, icmp_data=data)
+            self.send_icmp(datapath=datapath, dst_ip=ip_src, src_mac=mac_src, icmp_type=3, icmp_code=1, ip_ihl=ip_ihl, icmp_data=data)
             return
 
         #change packet's MAC dst to the next hop, and MAC src to the outgoing port's MAC
