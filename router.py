@@ -99,10 +99,17 @@ class Router(app_manager.RyuApp):
         for interface in self.interface_table.get(dpid):
             if interface.get("port") == out_port:
                 src_ip = interface.get("ip")
-
+        
         offset = 14 + 8 + (ip_ihl * 4)
-        payload = bytearray(icmp_data[14:offset])
-        self.logger.debug(type(payload))
+        payload = icmp_data[14:offset]
+
+        if icmp_type == 3:
+            self.logger.debug("TYPE 3 ICMP")
+            payload = icmp.dest_unreach(data=payload)
+        
+        if icmp_type == 11:
+            self.logger.debug("TYPE 11 ICMP")
+            payload = icmp.TimeExceeded(data=payload)
 
         ## pkt.add_protocol(...)
         ## https://ryu.readthedocs.io/en/latest/library_packet_ref/packet_icmp.html
@@ -115,6 +122,7 @@ class Router(app_manager.RyuApp):
         pkt.add_protocol(ipv4.ipv4(
             dst=dst_ip,
             src=src_ip,
+            ttl=64,
             proto=ipv4.inet.IPPROTO_ICMP
         ))
         pkt.add_protocol(icmp.icmp(
@@ -178,8 +186,13 @@ class Router(app_manager.RyuApp):
             ip_dst = pkt_ipv4.dst
             ip_src = pkt_ipv4.src
             ip_ihl = pkt_ipv4.header_length
+            ip_ttl = pkt_ipv4.ttl
             if pkt_ipv4.proto == 1:
                 self.logger.debug("Incoming packet is ICMP")
+            #check ttl
+            if ip_ttl <= 1:
+                self.send_icmp(datapath=datapath, dst_ip=ip_src, src_mac=mac_src, icmp_type=11, icmp_code=0, ip_ihl=ip_ihl, icmp_data=data)
+        
 
         #check packets MAC dest against datapath's interface table for validity
         interfaces = self.interface_table.get(dpid)
@@ -222,12 +235,15 @@ class Router(app_manager.RyuApp):
             #i dont know how this would happen
             return
         actions = [
+            parser.OFPActionDecNwTtl(),
             parser.OFPActionSetField(eth_src = out_mac),
             parser.OFPActionSetField(eth_dst = hop_mac),
             parser.OFPActionOutput(port = out_port)
         ]
 
+        self.add_flow(dpid, 5, ip_dst)
+
         #send packet!
-        self.logger.debug("{}: Routing packet to {} with target MAC {} (from port {} hopping to {})".format(dpid, ip_dst, hop_mac, out_port, hop_ip))
+        self.logger.debug("{}: Routing packet (TTL {}) to {} with target MAC {} (from port {} hopping to {})".format(dpid, ip_ttl, ip_dst, hop_mac, out_port, hop_ip))
         datapath.send_msg(parser.OFPPacketOut(datapath, ev.msg.buffer_id, in_port, actions, data))
         return
