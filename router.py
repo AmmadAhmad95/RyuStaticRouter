@@ -203,7 +203,7 @@ class Router(app_manager.RyuApp):
                 break
         if not interface_match:
             #packet shouldn't have come here!
-            self.logger.debug("Packet incorrectly came to router")
+            self.logger.debug("Packet MAC destination is not here")
             return
 
         #check packets IP against routing table - including subnets - and get the 
@@ -241,7 +241,7 @@ class Router(app_manager.RyuApp):
             parser.OFPActionOutput(port = out_port)
         ]
 
-        self.add_flow(dpid, 5, ip_dst)
+        self.add_flow(datapath, 5, parser.OFPMatch(eth_type=0x0800, ipv4_dst = (ip_dst, '255.255.255.0')), actions)
 
         #send packet!
         self.logger.debug("{}: Routing packet (TTL {}) to {} with target MAC {} (from port {} hopping to {})".format(dpid, ip_ttl, ip_dst, hop_mac, out_port, hop_ip))
